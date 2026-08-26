@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DB Viewer</title>
+<style>
+  :root {
+    --color-bg: #f4f5f7;
+    --color-surface: #ffffff;
+    --color-text: #1c2126;
+    --color-primary: #2b5a8a;
+    --color-primary-dark: #1d3f61;
+    --color-border: #dde1e6;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", Verdana, Arial, sans-serif;
+    background: var(--color-bg);
+    color: var(--color-text);
+    line-height: 1.4;
+  }
+  header {
+    background: var(--color-primary-dark);
+    color: #fff;
+    padding: 1rem 1.25rem;
+  }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  header p { margin: 0.25rem 0 0; font-size: 0.9rem; opacity: 0.85; }
+  main { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    max-width: 420px;
+  }
+  .card.wide { max-width: none; }
+  label { display: block; font-weight: bold; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+  input[type="email"], input[type="password"], input[type="number"], select {
+    font-size: 1rem;
+    padding: 0.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    width: 100%;
+  }
+  .btn {
+    display: inline-block;
+    background: var(--color-primary);
+    color: #fff;
+    border: none;
+    padding: 0.6rem 1.1rem;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    cursor: pointer;
+    margin-top: 0.9rem;
+  }
+  .btn:hover { background: var(--color-primary-dark); }
+  .btn:disabled { background: #9aa4af; cursor: not-allowed; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; }
+  .toolbar > div { flex: 1; min-width: 180px; }
+  .error-msg { color: #9b2020; margin-top: 0.6rem; }
+  .status-msg { color: #4a4f55; margin-top: 0.6rem; }
+  .table-wrap { overflow-x: auto; margin-top: 1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td {
+    border: 1px solid var(--color-border);
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th { background: #eef1f4; position: sticky; top: 0; }
+  #logoutBtn { float: right; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <button class="btn hidden" id="logoutBtn">Log Out</button>
+  <h1>DB Viewer</h1>
+  <p>Admin-only — dumps any real table in MyDataWorld.</p>
+</header>
+<main>
+  <div id="loginCard" class="card">
+    <h2>Log In</h2>
+    <label for="loginEmail">Email</label>
+    <input type="email" id="loginEmail" autocomplete="username">
+    <label for="loginPw">Password</label>
+    <input type="password" id="loginPw" autocomplete="current-password">
+    <button class="btn" id="loginBtn">Log In</button>
+    <div id="loginMsg"></div>
+  </div>
+
+  <div id="viewerCard" class="card wide hidden">
+    <div class="toolbar">
+      <div>
+        <label for="tableSelect">Table</label>
+        <select id="tableSelect"></select>
+      </div>
+      <div style="flex: 0 0 120px;">
+        <label for="limitInput">Row limit</label>
+        <input type="number" id="limitInput" value="500" min="1" max="2000">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="btn" id="loadBtn">Load</button>
+      </div>
+    </div>
+    <div id="dumpMsg" class="status-msg"></div>
+    <div id="dumpResult" class="table-wrap"></div>
+  </div>
+</main>
+<script>
+  const API_URL = "https://seniorfamily.org/db-viewer-api/api.php";
+  const AUTH_KEY = 'dbViewerAuth';
+  let auth = null; // { token, displayName }
+
+  function loadAuth() { try { return JSON.parse(sessionStorage.getItem(AUTH_KEY)); } catch { return null; } }
+  function saveAuth(a) { sessionStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
+  function clearAuth() { sessionStorage.removeItem(AUTH_KEY); }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str ?? '';
+    return div.innerHTML;
+  }
+
+  function authHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (auth && auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
+    return headers;
+  }
+
+  async function callApi(action, { method = 'GET', params = {}, body } = {}) {
+    const url = new URL(API_URL);
+    if (method === 'GET') {
+      url.searchParams.set('action', action);
+      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    }
+    const res = await fetch(url, {
+      method,
+      headers: authHeaders(),
+      body: method === 'POST' ? JSON.stringify({ action, ...(body || {}) }) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed: ${res.status}`);
+    return data;
+  }
+
+  const loginCard = document.getElementById('loginCard');
+  const viewerCard = document.getElementById('viewerCard');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const loginMsg = document.getElementById('loginMsg');
+  const tableSelect = document.getElementById('tableSelect');
+  const dumpMsg = document.getElementById('dumpMsg');
+  const dumpResult = document.getElementById('dumpResult');
+
+  function showLogin(message) {
+    clearAuth();
+    auth = null;
+    loginCard.classList.remove('hidden');
+    viewerCard.classList.add('hidden');
+    logoutBtn.classList.add('hidden');
+    loginMsg.innerHTML = message ? `<div class="error-msg">${escapeHtml(message)}</div>` : '';
+  }
+
+  async function showViewer() {
+    loginCard.classList.add('hidden');
+    viewerCard.classList.remove('hidden');
+    logoutBtn.classList.remove('hidden');
+    try {
+      const { tables } = await callApi('tables');
+      tableSelect.innerHTML = tables.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    } catch (e) {
+      dumpMsg.innerHTML = `<div class="error-msg">Couldn't load the table list: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function attemptLogin() {
+    const username = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPw').value;
+    loginMsg.innerHTML = '';
+    if (!username || !password) return;
+    try {
+      const data = await callApi('login', { method: 'POST', body: { username, password } });
+      auth = { token: data.token, displayName: data.displayName || username };
+      saveAuth(auth);
+      await showViewer();
+    } catch (e) {
+      loginMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', attemptLogin);
+  document.getElementById('loginPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') attemptLogin(); });
+
+  logoutBtn.addEventListener('click', async () => {
+    try { await callApi('logout', { method: 'POST', body: { token: auth.token } }); } catch (e) {}
+    showLogin();
+  });
+
+  document.getElementById('loadBtn').addEventListener('click', async () => {
+    const table = tableSelect.value;
+    const limit = document.getElementById('limitInput').value || 500;
+    if (!table) return;
+    dumpMsg.textContent = 'Loading…';
+    dumpResult.innerHTML = '';
+    try {
+      const data = await callApi('dump', { params: { table, limit } });
+      dumpMsg.textContent = `${data.rowCount} row(s) — table: ${data.table}${data.rowCount >= data.limit ? ` (capped at ${data.limit})` : ''}`;
+      if (!data.rows.length) {
+        dumpResult.innerHTML = '';
+        return;
+      }
+      const cols = Object.keys(data.rows[0]);
+      dumpResult.innerHTML = `
+        <table>
+          <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${data.rows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(r[c])}</td>`).join('')}</tr>`).join('')}
+          </tbody>
+        </table>
+      `;
+    } catch (e) {
+      dumpMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      if (/session|authoriz/i.test(e.message)) showLogin('Your saved login stopped working. Please log in again.');
+    }
+  });
+
+  (async () => {
+    auth = loadAuth();
+    if (!auth) { showLogin(); return; }
+    try {
+      await callApi('checkAccess');
+      await showViewer();
+    } catch (e) {
+      showLogin();
+    }
+  })();
+</script>
+</body>
+</html>
