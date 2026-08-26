@@ -89,8 +89,11 @@ function requireAdmin(): array {
 // name can't be a bound query parameter, so it's only ever used in a query
 // after being checked against this exact list.
 function listRealTables(): array {
+  // bind_param() takes its arguments by reference, which a constant (DB_NAME)
+  // can't satisfy directly -- has to go through a real variable first.
+  $dbName = DB_NAME;
   $stmt = db()->prepare('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME');
-  $stmt->bind_param('s', DB_NAME);
+  $stmt->bind_param('s', $dbName);
   $stmt->execute();
   $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
   $stmt->close();
