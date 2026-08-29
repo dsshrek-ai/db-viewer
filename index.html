@@ -62,6 +62,15 @@
   .btn:disabled { background: #9aa4af; cursor: not-allowed; }
   .toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; }
   .toolbar > div { flex: 1; min-width: 180px; }
+  .filter-bar { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
+  .filter-bar input[type="text"] {
+    font-size: 1rem;
+    padding: 0.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    width: 100%;
+  }
+  mark { background: #fff1a8; padding: 0 0.1em; }
   .error-msg { color: #9b2020; margin-top: 0.6rem; }
   .status-msg { color: #4a4f55; margin-top: 0.6rem; }
   .table-wrap { overflow-x: auto; margin-top: 1rem; }
@@ -109,6 +118,33 @@
       </div>
     </div>
     <div id="dumpMsg" class="status-msg"></div>
+
+    <div id="filterBar" class="toolbar filter-bar hidden">
+      <div>
+        <label for="searchInput">Search everywhere</label>
+        <input type="text" id="searchInput" placeholder="Filter as you type…">
+      </div>
+      <div style="flex: 0 0 160px;">
+        <label for="filterField">Field</label>
+        <select id="filterField"><option value="">(none)</option></select>
+      </div>
+      <div style="flex: 0 0 90px;">
+        <label for="filterOp">Op</label>
+        <select id="filterOp">
+          <option value="=">=</option>
+          <option value="<>">&lt;&gt;</option>
+        </select>
+      </div>
+      <div>
+        <label for="filterValue">Value</label>
+        <input type="text" id="filterValue" placeholder="Value to match…">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="btn" id="clearFiltersBtn" type="button">Clear</button>
+      </div>
+    </div>
+
+    <div id="filterMsg" class="status-msg"></div>
     <div id="dumpResult" class="table-wrap"></div>
   </div>
 </main>
@@ -201,12 +237,93 @@
     showLogin();
   });
 
+  // ---- Quick filters, applied client-side against the already-loaded rows
+  // (never re-queried) -- both filters compose: search narrows first, then
+  // the field/op/value pick narrows further.
+
+  const filterBar = document.getElementById('filterBar');
+  const filterMsg = document.getElementById('filterMsg');
+  const searchInput = document.getElementById('searchInput');
+  const filterField = document.getElementById('filterField');
+  const filterOp = document.getElementById('filterOp');
+  const filterValue = document.getElementById('filterValue');
+
+  let allRows = [];
+  let allCols = [];
+
+  function highlightMatch(text, needle) {
+    const safe = escapeHtml(text);
+    if (!needle) return safe;
+    const idx = safe.toLowerCase().indexOf(needle.toLowerCase());
+    if (idx === -1) return safe;
+    return safe.slice(0, idx) + '<mark>' + safe.slice(idx, idx + needle.length) + '</mark>' + safe.slice(idx + needle.length);
+  }
+
+  function renderRows(rows, cols, searchTerm) {
+    if (!rows.length) {
+      dumpResult.innerHTML = '';
+      filterMsg.textContent = allRows.length ? 'No rows match this filter.' : '';
+      return;
+    }
+    filterMsg.textContent = rows.length === allRows.length
+      ? ''
+      : `Showing ${rows.length} of ${allRows.length} row(s).`;
+    dumpResult.innerHTML = `
+      <table>
+        <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr>${cols.map(c => `<td>${highlightMatch(r[c], searchTerm)}</td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function applyFilters() {
+    if (!allRows.length) return;
+    const search = searchInput.value.trim().toLowerCase();
+    const field = filterField.value;
+    const op = filterOp.value;
+    const value = filterValue.value.trim().toLowerCase();
+
+    let rows = allRows;
+
+    if (search) {
+      rows = rows.filter(r => allCols.some(c => String(r[c] ?? '').toLowerCase().includes(search)));
+    }
+
+    if (field && value) {
+      rows = rows.filter(r => {
+        const cell = String(r[field] ?? '').toLowerCase();
+        return op === '=' ? cell === value : cell !== value;
+      });
+    }
+
+    renderRows(rows, allCols, search);
+  }
+
+  [searchInput, filterField, filterOp, filterValue].forEach(el => {
+    el.addEventListener('input', applyFilters);
+    el.addEventListener('change', applyFilters);
+  });
+
+  document.getElementById('clearFiltersBtn').addEventListener('click', () => {
+    searchInput.value = '';
+    filterField.value = '';
+    filterOp.value = '=';
+    filterValue.value = '';
+    applyFilters();
+  });
+
   document.getElementById('loadBtn').addEventListener('click', async () => {
     const table = tableSelect.value;
     const limit = document.getElementById('limitInput').value || 500;
     if (!table) return;
     dumpMsg.textContent = 'Loading…';
+    filterMsg.textContent = '';
     dumpResult.innerHTML = '';
+    filterBar.classList.add('hidden');
+    allRows = [];
+    allCols = [];
     try {
       const data = await callApi('dump', { params: { table, limit } });
       dumpMsg.textContent = `${data.rowCount} row(s) — table: ${data.table}${data.rowCount >= data.limit ? ` (capped at ${data.limit})` : ''}`;
@@ -214,15 +331,16 @@
         dumpResult.innerHTML = '';
         return;
       }
-      const cols = Object.keys(data.rows[0]);
-      dumpResult.innerHTML = `
-        <table>
-          <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${data.rows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(r[c])}</td>`).join('')}</tr>`).join('')}
-          </tbody>
-        </table>
-      `;
+      allRows = data.rows;
+      allCols = Object.keys(data.rows[0]);
+      filterField.innerHTML = '<option value="">(none)</option>' +
+        allCols.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      searchInput.value = '';
+      filterField.value = '';
+      filterOp.value = '=';
+      filterValue.value = '';
+      filterBar.classList.remove('hidden');
+      renderRows(allRows, allCols, '');
     } catch (e) {
       dumpMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       if (/session|authoriz/i.test(e.message)) showLogin('Your saved login stopped working. Please log in again.');
