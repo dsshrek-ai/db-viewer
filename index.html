@@ -40,13 +40,26 @@
   }
   .card.wide { max-width: none; }
   label { display: block; font-weight: bold; margin-top: 0.75rem; margin-bottom: 0.25rem; }
-  input[type="email"], input[type="password"], input[type="number"], select {
+  input[type="email"], input[type="password"], input[type="number"], input[type="text"], select {
     font-size: 1rem;
     padding: 0.5rem;
     border-radius: var(--radius);
     border: 1px solid var(--color-border);
     width: 100%;
   }
+  textarea {
+    font-family: ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    padding: 0.6rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    width: 100%;
+    resize: vertical;
+    tab-size: 2;
+  }
+  .btn.subtle { background: #6b7682; }
+  .btn.subtle:hover { background: #55606b; }
   .btn {
     display: inline-block;
     background: var(--color-primary);
@@ -62,6 +75,15 @@
   .btn:disabled { background: #9aa4af; cursor: not-allowed; }
   .toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; }
   .toolbar > div { flex: 1; min-width: 180px; }
+  .filter-bar { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
+  .filter-bar input[type="text"] {
+    font-size: 1rem;
+    padding: 0.5rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    width: 100%;
+  }
+  mark { background: #fff1a8; padding: 0 0.1em; }
   .error-msg { color: #9b2020; margin-top: 0.6rem; }
   .status-msg { color: #4a4f55; margin-top: 0.6rem; }
   .table-wrap { overflow-x: auto; margin-top: 1rem; }
@@ -81,7 +103,7 @@
 <header>
   <button class="btn hidden" id="logoutBtn">Log Out</button>
   <h1>DB Viewer</h1>
-  <p>Admin-only — dumps any real table in MyDataWorld.</p>
+  <p>Admin-only — browse any table in MyDataWorld, or run a read-only query.</p>
 </header>
 <main>
   <div id="loginCard" class="card">
@@ -109,7 +131,66 @@
       </div>
     </div>
     <div id="dumpMsg" class="status-msg"></div>
+
+    <div id="filterBar" class="toolbar filter-bar hidden">
+      <div>
+        <label for="searchInput">Search everywhere</label>
+        <input type="text" id="searchInput" placeholder="Filter as you type…">
+      </div>
+      <div style="flex: 0 0 160px;">
+        <label for="filterField">Field</label>
+        <select id="filterField"><option value="">(none)</option></select>
+      </div>
+      <div style="flex: 0 0 90px;">
+        <label for="filterOp">Op</label>
+        <select id="filterOp">
+          <option value="=">=</option>
+          <option value="<>">&lt;&gt;</option>
+        </select>
+      </div>
+      <div>
+        <label for="filterValue">Value</label>
+        <input type="text" id="filterValue" placeholder="Value to match…">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="btn" id="clearFiltersBtn" type="button">Clear</button>
+      </div>
+    </div>
+
+    <div id="filterMsg" class="status-msg"></div>
     <div id="dumpResult" class="table-wrap"></div>
+  </div>
+
+  <div id="queryCard" class="card wide hidden">
+    <h2 style="margin-top: 0;">Run SQL</h2>
+    <div class="toolbar">
+      <div>
+        <label for="savedSelect">Saved queries</label>
+        <select id="savedSelect"><option value="">— pick a saved query —</option></select>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="btn subtle" id="deleteQueryBtn" type="button">Delete</button>
+      </div>
+    </div>
+
+    <label for="queryName">Name</label>
+    <input type="text" id="queryName" placeholder="e.g. App usage — last 30 days">
+
+    <label for="sqlInput">SQL — read-only (SELECT / WITH / SHOW / EXPLAIN / DESCRIBE). Ctrl+Enter runs.</label>
+    <textarea id="sqlInput" rows="12" spellcheck="false"
+      placeholder="SELECT * FROM users ORDER BY created_at DESC"></textarea>
+
+    <div class="toolbar" style="margin-top: 0.5rem;">
+      <div style="flex: 0 0 auto;">
+        <button class="btn" id="runBtn">Run</button>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="btn subtle" id="saveQueryBtn" type="button">Save</button>
+      </div>
+    </div>
+
+    <div id="queryMsg" class="status-msg"></div>
+    <div id="queryResult" class="table-wrap"></div>
   </div>
 </main>
 <script>
@@ -156,12 +237,22 @@
   const tableSelect = document.getElementById('tableSelect');
   const dumpMsg = document.getElementById('dumpMsg');
   const dumpResult = document.getElementById('dumpResult');
+  const queryCard = document.getElementById('queryCard');
+  const savedSelect = document.getElementById('savedSelect');
+  const queryName = document.getElementById('queryName');
+  const sqlInput = document.getElementById('sqlInput');
+  const runBtn = document.getElementById('runBtn');
+  const saveQueryBtn = document.getElementById('saveQueryBtn');
+  const deleteQueryBtn = document.getElementById('deleteQueryBtn');
+  const queryMsg = document.getElementById('queryMsg');
+  const queryResult = document.getElementById('queryResult');
 
   function showLogin(message) {
     clearAuth();
     auth = null;
     loginCard.classList.remove('hidden');
     viewerCard.classList.add('hidden');
+    queryCard.classList.add('hidden');
     logoutBtn.classList.add('hidden');
     loginMsg.innerHTML = message ? `<div class="error-msg">${escapeHtml(message)}</div>` : '';
   }
@@ -169,6 +260,7 @@
   async function showViewer() {
     loginCard.classList.add('hidden');
     viewerCard.classList.remove('hidden');
+    queryCard.classList.remove('hidden');
     logoutBtn.classList.remove('hidden');
     try {
       const { tables } = await callApi('tables');
@@ -176,6 +268,7 @@
     } catch (e) {
       dumpMsg.innerHTML = `<div class="error-msg">Couldn't load the table list: ${escapeHtml(e.message)}</div>`;
     }
+    loadSavedQueries();
   }
 
   async function attemptLogin() {
@@ -201,12 +294,93 @@
     showLogin();
   });
 
+  // ---- Quick filters, applied client-side against the already-loaded rows
+  // (never re-queried) -- both filters compose: search narrows first, then
+  // the field/op/value pick narrows further.
+
+  const filterBar = document.getElementById('filterBar');
+  const filterMsg = document.getElementById('filterMsg');
+  const searchInput = document.getElementById('searchInput');
+  const filterField = document.getElementById('filterField');
+  const filterOp = document.getElementById('filterOp');
+  const filterValue = document.getElementById('filterValue');
+
+  let allRows = [];
+  let allCols = [];
+
+  function highlightMatch(text, needle) {
+    const safe = escapeHtml(text);
+    if (!needle) return safe;
+    const idx = safe.toLowerCase().indexOf(needle.toLowerCase());
+    if (idx === -1) return safe;
+    return safe.slice(0, idx) + '<mark>' + safe.slice(idx, idx + needle.length) + '</mark>' + safe.slice(idx + needle.length);
+  }
+
+  function renderRows(rows, cols, searchTerm) {
+    if (!rows.length) {
+      dumpResult.innerHTML = '';
+      filterMsg.textContent = allRows.length ? 'No rows match this filter.' : '';
+      return;
+    }
+    filterMsg.textContent = rows.length === allRows.length
+      ? ''
+      : `Showing ${rows.length} of ${allRows.length} row(s).`;
+    dumpResult.innerHTML = `
+      <table>
+        <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr>${cols.map(c => `<td>${highlightMatch(r[c], searchTerm)}</td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function applyFilters() {
+    if (!allRows.length) return;
+    const search = searchInput.value.trim().toLowerCase();
+    const field = filterField.value;
+    const op = filterOp.value;
+    const value = filterValue.value.trim().toLowerCase();
+
+    let rows = allRows;
+
+    if (search) {
+      rows = rows.filter(r => allCols.some(c => String(r[c] ?? '').toLowerCase().includes(search)));
+    }
+
+    if (field && value) {
+      rows = rows.filter(r => {
+        const cell = String(r[field] ?? '').toLowerCase();
+        return op === '=' ? cell === value : cell !== value;
+      });
+    }
+
+    renderRows(rows, allCols, search);
+  }
+
+  [searchInput, filterField, filterOp, filterValue].forEach(el => {
+    el.addEventListener('input', applyFilters);
+    el.addEventListener('change', applyFilters);
+  });
+
+  document.getElementById('clearFiltersBtn').addEventListener('click', () => {
+    searchInput.value = '';
+    filterField.value = '';
+    filterOp.value = '=';
+    filterValue.value = '';
+    applyFilters();
+  });
+
   document.getElementById('loadBtn').addEventListener('click', async () => {
     const table = tableSelect.value;
     const limit = document.getElementById('limitInput').value || 500;
     if (!table) return;
     dumpMsg.textContent = 'Loading…';
+    filterMsg.textContent = '';
     dumpResult.innerHTML = '';
+    filterBar.classList.add('hidden');
+    allRows = [];
+    allCols = [];
     try {
       const data = await callApi('dump', { params: { table, limit } });
       dumpMsg.textContent = `${data.rowCount} row(s) — table: ${data.table}${data.rowCount >= data.limit ? ` (capped at ${data.limit})` : ''}`;
@@ -214,18 +388,118 @@
         dumpResult.innerHTML = '';
         return;
       }
-      const cols = Object.keys(data.rows[0]);
-      dumpResult.innerHTML = `
-        <table>
-          <thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${data.rows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(r[c])}</td>`).join('')}</tr>`).join('')}
-          </tbody>
-        </table>
-      `;
+      allRows = data.rows;
+      allCols = Object.keys(data.rows[0]);
+      filterField.innerHTML = '<option value="">(none)</option>' +
+        allCols.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      searchInput.value = '';
+      filterField.value = '';
+      filterOp.value = '=';
+      filterValue.value = '';
+      filterBar.classList.remove('hidden');
+      renderRows(allRows, allCols, '');
     } catch (e) {
       dumpMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       if (/session|authoriz/i.test(e.message)) showLogin('Your saved login stopped working. Please log in again.');
+    }
+  });
+
+  // ---- Run SQL + saved queries ---------------------------------------------
+
+  let savedQueries = [];
+
+  async function loadSavedQueries() {
+    try {
+      const { queries } = await callApi('savedQueries');
+      savedQueries = queries || [];
+      const current = savedSelect.value;
+      savedSelect.innerHTML = '<option value="">— pick a saved query —</option>' +
+        savedQueries.map(q => `<option value="${q.id}">${escapeHtml(q.name)}</option>`).join('');
+      if (savedQueries.some(q => String(q.id) === current)) savedSelect.value = current;
+    } catch (e) {
+      queryMsg.innerHTML = `<div class="error-msg">Couldn't load saved queries: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderQueryTable(columns, rows) {
+    if (!columns.length) { queryResult.innerHTML = ''; return; }
+    queryResult.innerHTML = `
+      <table>
+        <thead><tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr>${columns.map(c => `<td>${escapeHtml(r[c])}</td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  savedSelect.addEventListener('change', () => {
+    const q = savedQueries.find(x => String(x.id) === savedSelect.value);
+    if (!q) return;
+    queryName.value = q.name;
+    sqlInput.value = q.sql;
+    queryMsg.textContent = '';
+  });
+
+  async function runQuery() {
+    const sql = sqlInput.value.trim();
+    if (!sql) return;
+    runBtn.disabled = true;
+    queryMsg.textContent = 'Running…';
+    queryResult.innerHTML = '';
+    try {
+      const data = await callApi('runQuery', { method: 'POST', body: { sql } });
+      const cols = data.columns || [];
+      queryMsg.textContent = data.rowCount === 0
+        ? 'No rows.'
+        : `${data.rowCount} row(s)${data.capped ? ` — showing the first ${data.rowCount}` : ''}`;
+      renderQueryTable(cols, data.rows || []);
+    } catch (e) {
+      queryMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      if (/session|authoriz/i.test(e.message)) showLogin('Your saved login stopped working. Please log in again.');
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  runBtn.addEventListener('click', runQuery);
+  sqlInput.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); runQuery(); }
+  });
+
+  saveQueryBtn.addEventListener('click', async () => {
+    const name = queryName.value.trim();
+    const sql = sqlInput.value.trim();
+    if (!name) { queryMsg.innerHTML = '<div class="error-msg">Give the query a name before saving.</div>'; return; }
+    if (!sql) { queryMsg.innerHTML = '<div class="error-msg">Nothing to save.</div>'; return; }
+    saveQueryBtn.disabled = true;
+    try {
+      await callApi('saveQuery', { method: 'POST', body: { name, sql } });
+      await loadSavedQueries();
+      const match = savedQueries.find(q => q.name === name);
+      if (match) savedSelect.value = match.id;
+      queryMsg.textContent = `Saved “${name}”.`;
+    } catch (e) {
+      queryMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    } finally {
+      saveQueryBtn.disabled = false;
+    }
+  });
+
+  deleteQueryBtn.addEventListener('click', async () => {
+    const id = savedSelect.value;
+    if (!id) { queryMsg.innerHTML = '<div class="error-msg">Pick a saved query to delete.</div>'; return; }
+    const q = savedQueries.find(x => String(x.id) === id);
+    if (!confirm(`Delete saved query “${q ? q.name : id}”?`)) return;
+    deleteQueryBtn.disabled = true;
+    try {
+      await callApi('deleteQuery', { method: 'POST', body: { id: Number(id) } });
+      await loadSavedQueries();
+      savedSelect.value = '';
+      queryMsg.textContent = 'Deleted.';
+    } catch (e) {
+      queryMsg.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    } finally {
+      deleteQueryBtn.disabled = false;
     }
   });
 
